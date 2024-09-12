@@ -1,6 +1,5 @@
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 from sqlalchemy import create_engine, MetaData
 import os
 from dotenv import load_dotenv
