@@ -1,15 +1,14 @@
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, MetaData
-import os
-from dotenv import load_dotenv
 import json
 from pathlib import Path
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
 load_dotenv()
 
-CACHE_FILE = Path("db_schema_cache.json")
+SCHEMA_FILE = Path("db_schema.json")
 
 
 def check_password():
@@ -42,60 +41,17 @@ def check_password():
         return True
 
 
-def inspect_database(connection_string):
-    engine = create_engine(connection_string)
-    metadata = MetaData()
-    metadata.reflect(engine)
-
-    schema_info = []
-
-    for table_name in metadata.tables:
-        table = metadata.tables[table_name]
-
-        # Get primary key
-        primary_key = ", ".join([col.name for col in table.primary_key.columns])
-
-        # Get foreign keys (references)
-        references = []
-        for fk in table.foreign_keys:
-            references.append(f"{fk.column.table.name}.{fk.column.name}")
-
-        # Get tables referencing this table
-        referenced_by = []
-        for other_table in metadata.tables.values():
-            for fk in other_table.foreign_keys:
-                if fk.references(table):
-                    referenced_by.append(other_table.name)
-
-        schema_info.append(
-            {
-                "table": table_name,
-                "primary_key": primary_key,
-                "references": ", ".join(references),
-                "referenced_by": ", ".join(set(referenced_by)),
-                "num_references": len(references),
-                "num_referenced_by": len(set(referenced_by)),
-            }
-        )
-
-    return schema_info
-
-
-def save_cache(data):
-    cache_data = {"timestamp": datetime.now().isoformat(), "schema_info": data}
-    with CACHE_FILE.open("w") as f:
-        json.dump(cache_data, f)
-
-
-def load_cache():
-    if CACHE_FILE.exists():
-        with CACHE_FILE.open("r") as f:
-            return json.load(f)
-    return None
+def load_schema_data():
+    if SCHEMA_FILE.exists():
+        with SCHEMA_FILE.open("r") as f:
+            data = json.load(f)
+        return pd.DataFrame(data["schema_info"]), data["timestamp"]
+    else:
+        st.error(f"Schema file {SCHEMA_FILE} not found.")
+        return None, None
 
 
 def create_dashboard(df, last_updated):
-
     st.title("⭕ Normandy Database Schema Dashboard")
 
     formatted_time = datetime.fromisoformat(last_updated).strftime("%Y-%m-%d %H:%M:%S")
@@ -126,28 +82,7 @@ def create_dashboard(df, last_updated):
 
 @st.cache_data
 def get_schema_data():
-    cached_data = load_cache()
-    if cached_data:
-        if (
-            isinstance(cached_data, dict)
-            and "schema_info" in cached_data
-            and "timestamp" in cached_data
-        ):
-            return pd.DataFrame(cached_data["schema_info"]), cached_data["timestamp"]
-        elif isinstance(cached_data, list):
-            # Handle old cache format
-            return pd.DataFrame(cached_data), datetime.now().isoformat()
-        else:
-            st.warning("Cache format is invalid. Refreshing data from database.")
-
-    connection_string = os.getenv("DB_CONNECTION_STRING")
-    if not connection_string:
-        st.error("Database connection string not found. Please check your .env file.")
-        return None, None
-
-    schema_info = inspect_database(connection_string)
-    save_cache(schema_info)
-    return pd.DataFrame(schema_info), datetime.now().isoformat()
+    return load_schema_data()
 
 
 if __name__ == "__main__":
