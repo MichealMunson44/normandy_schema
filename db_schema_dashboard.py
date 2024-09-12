@@ -2,6 +2,45 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from sqlalchemy import create_engine, MetaData
+import os
+from dotenv import load_dotenv
+import json
+from pathlib import Path
+from datetime import datetime
+
+load_dotenv()
+
+CACHE_FILE = Path("db_schema_cache.json")
+
+
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    st.set_page_config(layout="wide")
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == os.getenv("DASHBOARD_PASSWORD"):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password not correct, show input + error.
+        st.text_input(
+            "Password", type="password", on_change=password_entered, key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
 
 
 def inspect_database(connection_string):
@@ -40,37 +79,42 @@ def inspect_database(connection_string):
             }
         )
 
-    return pd.DataFrame(schema_info)
+    return schema_info
 
 
-def create_dashboard(df):
-    st.title("Database Schema Dashboard")
+def save_cache(data):
+    cache_data = {"timestamp": datetime.now().isoformat(), "schema_info": data}
+    with CACHE_FILE.open("w") as f:
+        json.dump(cache_data, f)
+
+
+def load_cache():
+    if CACHE_FILE.exists():
+        with CACHE_FILE.open("r") as f:
+            return json.load(f)
+    return None
+
+
+def create_dashboard(df, last_updated):
+
+    st.title("⭕ Normandy Database Schema Dashboard")
+
+    formatted_time = datetime.fromisoformat(last_updated).strftime("%Y-%m-%d %H:%M:%S")
+    st.write(f"Last updated: {formatted_time}")
 
     st.write("## Overview")
     st.write(f"Total number of tables: {len(df)}")
 
-    st.write("## Search Table")
-    search_term = st.text_input("Enter table name to search:")
+    st.write("## Schema Information")
+    search_term = st.text_input("Enter table name to search")
     if search_term:
         filtered_df = df[df["table"].str.contains(search_term, case=False)]
         if not filtered_df.empty:
             st.write(f"Found {len(filtered_df)} table(s) matching '{search_term}':")
-            st.dataframe(filtered_df)
+            st.dataframe(filtered_df, use_container_width=True)
         else:
             st.write(f"No tables found matching '{search_term}'")
-
-    st.write("## Schema Information")
-    st.dataframe(df)
-
-    st.write("## Table Reference Visualization")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(df["num_references"], df["num_referenced_by"], alpha=0.5)
-    ax.set_xlabel("Number of Tables Referenced")
-    ax.set_ylabel("Number of Tables Referencing")
-    ax.set_title("Table Relationships")
-    for i, txt in enumerate(df["table"]):
-        ax.annotate(txt, (df["num_references"][i], df["num_referenced_by"][i]))
-    st.pyplot(fig)
+    st.dataframe(df, use_container_width=True)
 
     st.write("## Most Referenced Tables")
     top_referenced = df.nlargest(5, "num_referenced_by")
@@ -81,7 +125,36 @@ def create_dashboard(df):
     st.bar_chart(top_references.set_index("table")["num_references"])
 
 
+@st.cache_data
+def get_schema_data():
+    cached_data = load_cache()
+    if cached_data:
+        if (
+            isinstance(cached_data, dict)
+            and "schema_info" in cached_data
+            and "timestamp" in cached_data
+        ):
+            return pd.DataFrame(cached_data["schema_info"]), cached_data["timestamp"]
+        elif isinstance(cached_data, list):
+            # Handle old cache format
+            return pd.DataFrame(cached_data), datetime.now().isoformat()
+        else:
+            st.warning("Cache format is invalid. Refreshing data from database.")
+
+    connection_string = os.getenv("DB_CONNECTION_STRING")
+    if not connection_string:
+        st.error("Database connection string not found. Please check your .env file.")
+        return None, None
+
+    schema_info = inspect_database(connection_string)
+    save_cache(schema_info)
+    return pd.DataFrame(schema_info), datetime.now().isoformat()
+
+
 if __name__ == "__main__":
-    connection_string = "postgresql://michealmunson@localhost:5432/normandy"
-    df = inspect_database(connection_string)
-    create_dashboard(df)
+    if check_password():
+        df, last_updated = get_schema_data()
+        if df is not None:
+            create_dashboard(df, last_updated)
+    else:
+        st.stop()  # Don't run the rest of the app
